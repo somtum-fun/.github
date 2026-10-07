@@ -2,9 +2,9 @@
   <img src="https://github.com/user-attachments/assets/37be4bfc-60e5-496f-bd02-abe0adf3979c" width="300">
 </p>
 
-# osu!somtum
+# somtum.fun
 
-osu!somtum is an [osu!](https://osu.ppy.sh) private server from Thailand. Services communicate via a shared MySQL database and Redis cache, all hosted on OVH and fronted by Cloudflare.
+somtum.fun is an [osu!](https://osu.ppy.sh) private server from Thailand. Services communicate via a shared MySQL database and Redis cache, all hosted on OVH and fronted by Cloudflare.
 
 **Website:** [somtum.fun](https://somtum.fun)
 
@@ -157,7 +157,7 @@ flowchart TB
 
 ### Beatmap Upload Flow
 
-osu!somtum lets players host their own beatmaps (a custom feature not in vanilla bancho.py). Uploads are supported both **in-game** (via the standard `osu-osz2-bmsubmit` endpoints on `osu.somtum.fun`) and through the **web frontend**:
+somtum.fun lets players host their own beatmaps (a custom feature not in vanilla bancho.py). Uploads are supported both **in-game** (via the standard `osu-osz2-bmsubmit` endpoints on `osu.somtum.fun`) and through the **web frontend**:
 
 1. Player uploads an `.osz` to bancho.py
 2. bancho.py validates the session, parses the zip, and SHA-256-dedups each difficulty against existing maps
