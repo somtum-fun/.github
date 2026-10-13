@@ -4,17 +4,20 @@
 
 # somtum.fun
 
-somtum.fun is an [osu!](https://osu.ppy.sh) private server from Thailand. Services communicate via a shared MySQL database and Redis cache, all hosted on OVH and fronted by Cloudflare.
+somtum.fun is an [osu!](https://osu.ppy.sh) private server from Thailand. Since October 2026 it runs on **[TomYum-OSS](https://docs.somtum.fun)**, our own osu! server written in C#. It serves osu!(stable), osu!lazer (through our **TumThai** client) and the old 2008-2015 clients, all on **one shared leaderboard**. The website is a fork of ppy's own osu-web. Everything runs in Podman containers on one Oracle Cloud ARM machine, behind Cloudflare.
 
-**Website:** [somtum.fun](https://somtum.fun)
+**Website:** [osu.somtum.fun](https://osu.somtum.fun) · **Docs:** [docs.somtum.fun](https://docs.somtum.fun)
 
 ## Service Architecture
 
 ```mermaid
 flowchart TB
-    subgraph Clients["External Clients"]
-        osu(["osu! Game Client"])
+    subgraph Clients["Players"]
+        stable(["osu!(stable)<br/>Somtum Launcher / Patcher"])
+        legacy(["Old clients 2008-2015"])
+        lazer(["TumThai (lazer)<br/>Windows · Linux · macOS · Android"])
         web(["Web Browser"])
+        irc(["IRC clients & bots"])
         dclient(["Discord"])
     end
 
@@ -22,191 +25,186 @@ flowchart TB
         cf{{"Proxy & Cache"}}
     end
 
-    subgraph OVH["OVH VPS — Podman Containers"]
-        ng{{"Caddy — Reverse Proxy & Rate Limiting"}}
+    subgraph OCI["Oracle Cloud — ARM VM, Podman"]
+        hostcaddy{{"Host Caddy<br/>TLS (Cloudflare Origin cert)"}}
+        caddy{{"Stack Caddy<br/>routing"}}
 
-        subgraph Public["Public Services"]
-            bancho["bancho.py<br/>(Python/FastAPI) :10000"]
-            gukarkka["gukarkka<br/>(Next.js 14) :3000"]
-            payments["payments-service<br/>(Python/FastAPI) :8001"]
+        subgraph Game["Game"]
+            tomyum["TomYum<br/>(C# / .NET 10)<br/>bancho · /web · IRC · Discord bot"]
+            spectator["tomyum-spectator<br/>(lazer multiplayer & spectating)"]
         end
 
-        subgraph Internal["Internal Services"]
-            circlecore["Circlecore-somtum<br/>(Python/FastAPI) :8555"]
+        subgraph Website["Website"]
+            osuweb["osu-web fork<br/>(PHP/Laravel + Octane)"]
+            jobs["job · scheduler<br/>notification-server"]
         end
 
-        subgraph Bots["Bots"]
-            bot["Discord-Bot-Somtum<br/>(discord.py)"]
+        subgraph Processing["Score processing"]
+            scoreproc["score-processor<br/>(ppy's, pp & stats)"]
+            indexer["score-indexer<br/>(ppy's)"]
+            ppside["pp-sidecar ·<br/>difficulty-lookup-cache"]
+            circleguard["circleguard<br/>(replay checks)"]
+        end
+
+        subgraph Others["Other services"]
+            payments["payments-service<br/>(Python/FastAPI)"]
+            qat["BN Management (qat)<br/>(Node.js)"]
         end
 
         subgraph Data["Data Stores"]
-            mysql[("MySQL 9.4<br/>Shared Database")]
-            redis[("Redis 8.2<br/>Cache & Sessions")]
-            files[("Static Files<br/>Avatars & Replays")]
+            mysql[("MySQL 8.4")]
+            redis[("Redis 7.4")]
+            es[("Elasticsearch 7.17")]
+            mongo[("MongoDB 7<br/>(qat)")]
+            files[("Files<br/>avatars · replays · beatmaps")]
+            dl[("Downloads<br/>dl.somtum.fun")]
         end
 
-        subgraph Backup["Backups"]
-            timer["somtum-backup.timer<br/>(systemd · hourly)"]
-        end
-    end
-
-    subgraph Offsite["Offsite — Thailand"]
-        miyabi[("Syncthing Replica<br/>Hourly Snapshots")]
+        backup["Nightly backup<br/>(cron 04:30, 7 days)"]
     end
 
     subgraph ExternalAPIs["External APIs"]
-        osuapi["osu! API v1/v2"]
-        discordwh["Discord Webhooks"]
+        osuapi["osu! API"]
+        mirror["catboy.best mirror"]
+        discordapi["Discord"]
         truemoney["TrueMoney / PromptPay"]
         stripe["Stripe"]
     end
 
-    %% Client connections
-    osu -->|"c.somtum.fun"| cf
-    web --> cf --> ng
-    dclient <--> bot
+    stable & legacy -->|"c.somtum.fun"| cf
+    lazer -->|"osu. / spectator.somtum.fun"| cf
+    web --> cf
+    cf --> hostcaddy --> caddy
+    legacy -.->|"TCP bancho (pre-2014)"| tomyum
+    irc -->|"irc.somtum.fun:6667"| tomyum
+    dclient <--> tomyum
 
-    %% Caddy routing
-    ng -->|"somtum.fun"| gukarkka
-    ng -->|"session / api .somtum.fun"| bancho
-    ng -->|"a.somtum.fun"| files
+    caddy --> tomyum & osuweb & spectator
+    hostcaddy --> payments & qat & dl
 
-    %% Inter-service HTTP
-    gukarkka -->|"player & session data"| bancho
-    gukarkka -->|"donations"| payments
-    bancho -->|"replay analysis"| circlecore
-    payments -->|"grant_donator"| bancho
-    bot -->|"player actions"| bancho
-    bot -->|"replay checks"| circlecore
+    osuweb --> mysql & redis & es
+    jobs --> mysql & redis
+    tomyum --> mysql & redis & files
+    spectator --> mysql & redis
+    scoreproc --> mysql
+    indexer --> es
+    tomyum --> ppside & circleguard
+    qat --> mongo
+    qat -->|"OAuth & groups"| osuweb
+    payments -->|"supporter tags"| mysql
 
-    %% External APIs
-    bancho --> osuapi
-    bancho --> discordwh
-    circlecore --> discordwh
-    payments --> truemoney
-    payments --> stripe
-    bot --> discordwh
+    tomyum --> osuapi & mirror & discordapi
+    payments --> truemoney & stripe
 
-    %% Data stores
-    bancho --> mysql & redis
-    gukarkka --> redis
-    payments & bot --> mysql
+    mysql & files --> backup
 
-    %% Backups (side branch off the data stores)
-    mysql & redis & files -->|"hourly dump"| timer
-    timer -->|"Syncthing"| miyabi
-
-    %% Invisible links to keep External APIs as the bottom layer
-    miyabi ~~~ osuapi & discordwh & truemoney & stripe
-
-    %% Styling
     classDef client fill:#e1f5fe,stroke:#01579b,color:#01579b
     classDef proxy fill:#fff3e0,stroke:#e65100,color:#e65100
-    classDef public fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef game fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     classDef internal fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
     classDef data fill:#fce4ec,stroke:#c2185b,color:#880e4f
     classDef external fill:#eceff1,stroke:#546e7a,color:#37474f
-    classDef bot fill:#e3f2fd,stroke:#1565c0,color:#1565c0
     classDef backup fill:#fff8e1,stroke:#f9a825,color:#f57f17
 
-    class osu,web,dclient client
-    class cf,ng proxy
-    class bancho,gukarkka,payments public
-    class circlecore internal
-    class mysql,redis,files data
-    class osuapi,discordwh,truemoney,stripe external
-    class bot bot
-    class timer,miyabi backup
+    class stable,legacy,lazer,web,irc,dclient client
+    class cf,hostcaddy,caddy proxy
+    class tomyum,spectator,osuweb,jobs,payments,qat game
+    class scoreproc,indexer,ppside,circleguard internal
+    class mysql,redis,es,mongo,files,dl data
+    class osuapi,mirror,discordapi,truemoney,stripe external
+    class backup backup
 ```
 
 ## Services
 
 | Service | Language | Purpose |
 |---|---|---|
-| **bancho.py** | Python/FastAPI | Core game server (osu! protocol, scoring, multiplayer) |
-| **gukarkka** | Next.js 14/TypeScript | Web frontend — profiles, leaderboards, beatmap browser & uploads |
-| **Discord-Bot-Somtum** | Python/discord.py | Community bot — stats, moderation, beatmap workflow |
-| **Circlecore-somtum** | Python/FastAPI | Anti-cheat — replay analysis & similarity detection |
-| **payments-service** | Python/FastAPI | Donation processing (TrueMoney, PromptPay, Stripe) |
+| **TomYum** | C# / .NET 10 | The game server: bancho for stable and the old clients (HTTP and TCP), `/web` endpoints, lazer APIs, IRC, beatmap uploads, anti-cheat checks, the Discord bot (as a plugin) |
+| **osu-web (fork)** | PHP / Laravel + TypeScript | The website: profiles, rankings, beatmaps, forums, wiki, news, store, staff panel; osu!'s API v2 for TumThai |
+| **tomyum-spectator** | C# | lazer multiplayer, spectating and metadata (SignalR) |
+| **score-processor / score-indexer** | C# (ppy's) | pp and stats for every score; search index of scores |
+| **pp-sidecar / difficulty-lookup-cache** | C# | Difficulty and pp calculation |
+| **circleguard** | Python | Replay checks after a score is submitted |
+| **payments-service** | Python / FastAPI | The store: TrueMoney, PromptPay and Stripe |
+| **BN Management (qat)** | Node.js + MongoDB | BN applications and evaluations at bn.somtum.fun |
+| **Plugins** | C# | `tomyum.dan` (osu!dan), `tomyum.votes` (osu-server-list votes), bancho.py's v1 API, metrics, the Discord bot |
+
+### Clients
+
+| Client | What it is |
+|---|---|
+| **TumThai** | Our osu!lazer client (Windows, Linux, macOS, Android), the only lazer client that can submit scores |
+| **Somtum Launcher** | Installs, updates and starts TumThai, osu!(stable) and the old clients (Windows and Linux) |
+| **Somtum Patcher** | Starts osu!(stable) with our anti-cheat, plus Relax/Autopilot support |
+| **Legacy clients** | 75 osu! builds from 2008 to 2015, rebuilt to run on somtum.fun with our anti-cheat |
 
 ## Communication Patterns
 
-- **Shared Database**: bancho.py, Discord bot, and payments-service all connect to the same MySQL instance
-- **Redis**: bancho.py for sessions and cache; gukarkka for caching
-- **HTTP REST**: All inter-service communication
-
-### Inter-Service HTTP Calls
-
-| Caller | Target | Purpose |
-|---|---|---|
-| gukarkka | bancho.py | Player sessions, scores, leaderboards |
-| gukarkka | payments-service | Donation redeem, PromptPay, Stripe checkout, admin approve/reject |
-| bancho.py | Circlecore-somtum | Queue replay for analysis after score submit |
-| payments-service | bancho.py | `POST /internal/grant_donator` — sync donator status |
-| Discord-Bot-Somtum | bancho.py | Player management (restrict, whitelist, etc.) |
-| Discord-Bot-Somtum | Circlecore-somtum | On-demand replay checks from staff commands |
+- **Shared database**: TomYum, the website, ppy's processors and payments-service all use the same MySQL (osu-web's schema), so stable and lazer scores sit in the same tables and the same leaderboards.
+- **Redis**: sessions, cache and queues shared by TomYum and the website.
+- **Elasticsearch**: score, beatmap, user and wiki search for the website.
+- **HTTP**: the website ↔ TomYum (admin API, registration checks), qat ↔ the website (OAuth and groups).
 
 ### Score Submission Flow
 
-1. Client `POST`s encrypted score data to bancho.py via `c.somtum.fun`
-2. bancho.py decrypts and validates the score
-3. Score and stats written to MySQL
-4. Replay queued to Circlecore-somtum for async analysis
-5. Circlecore fires Discord webhook alert if suspicious
-6. First-place announcements sent via Discord webhook
+1. **osu!(stable) and the old clients** send their score to TomYum (`c.somtum.fun` / `osu.somtum.fun/web`). **TumThai** gets a score token from the website's API v2 and submits there.
+2. The anti-cheat must vouch for the client: TumThai is checked against our list of allowed builds, stable and the old clients need our anti-cheat running. Without that, players can still play, but scores don't submit.
+3. The score is written to MySQL, and ppy's score-processor works out its pp and the player's stats.
+4. The score-indexer puts it in Elasticsearch for the website's leaderboards and search.
+5. circleguard checks the replay, and anything suspicious goes to staff on Discord.
+6. The Discord bot posts new scores, and medals are awarded (including our custom medals).
 
 ### Beatmap Upload Flow
 
-somtum.fun lets players host their own beatmaps (a custom feature not in vanilla bancho.py). Uploads are supported both **in-game** (via the standard `osu-osz2-bmsubmit` endpoints on `osu.somtum.fun`) and through the **web frontend**:
+Players can host their own beatmaps, uploaded **in-game** from both stable (`osu-osz2-bmsubmit`) and lazer (beatmap submission):
 
-1. Player uploads an `.osz` to bancho.py
-2. bancho.py validates the session, parses the zip, and SHA-256-dedups each difficulty against existing maps
-3. Each diff is cross-checked against the osu! API v1 to reject maps already submitted to osu!
-4. A fresh somtum set ID is allocated; `BeatmapID`/`BeatmapSetID` lines are rewritten and the map is persisted to disk
-5. `mapsets`/`maps` rows are inserted as `somtum_only` with status `Pending`, awaiting nomination
-6. Upload is audited via Discord webhook
+1. TomYum checks the player's session and reads the `.osz`.
+2. Maps that already exist on osu! are refused.
+3. The set gets its own somtum.fun ID and is saved as **pending**.
+4. The upload is posted on Discord; BNs and the NAT take it from there (bn.somtum.fun).
 
 ## Tech Stack
 
 | Category | Technologies |
 |---|---|
-| **Languages** | Python, TypeScript, SQL |
-| **Web Frameworks** | FastAPI, Next.js 14, React 18 |
-| **Databases** | MySQL 9.4, Redis 8.2 |
-| **Styling** | Tailwind CSS, shadcn/ui |
-| **Discord** | discord.py 2.4+ |
-| **Anti-cheat** | circleguard 5.4.3 |
-| **Containers** | Podman / Podman Compose |
+| **Languages** | C#, PHP, TypeScript, Python, JavaScript |
+| **Frameworks** | ASP.NET Core (.NET 10), Laravel + Octane, FastAPI, SignalR |
+| **Databases** | MySQL 8.4, Redis 7.4, Elasticsearch 7.17, MongoDB 7 |
+| **Game client** | TumThai (fork of osu!lazer) |
+| **Anti-cheat** | pkms (client side), circleguard (replays), build allow-list |
+| **Containers** | Podman + Compose |
 | **Reverse Proxy** | Caddy |
-| **External APIs** | osu! API v1/v2, Discord, TrueMoney, PromptPay, Stripe |
+| **External APIs** | osu! API, catboy.best, Discord, TrueMoney, PromptPay, Stripe |
 
 ## Infrastructure
 
 | Provider | Purpose |
 |---|---|
-| **OVH** | VPS — hosts all services |
-| **Cloudflare** | DNS, CDN, DDoS protection, SSL certificates |
-| **Caddy** | Reverse proxy, automatic HTTPS, rate limiting |
-| **Podman** | Container runtime & orchestration |
+| **Oracle Cloud** | ARM VM: hosts every service |
+| **Cloudflare** | DNS, CDN, DDoS protection, SSL (Origin certificate) |
+| **Caddy** | TLS on the host, routing inside the stack |
+| **Podman** | Container runtime |
 
-### Backups & Disaster Recovery
+### Backups
 
-A `somtum-backup.timer` systemd user timer fires **hourly** on the OVH VPS, running `scripts/backup.sh` to snapshot:
-
-- `/var/www` (avatars, banners, replays, hosted beatmaps) → `www.tar.gz`
-- MySQL via `mysqldump --single-transaction` → gzipped SQL dump
-- Redis via `SAVE` + a copy of `dump.rdb`
-
-The last **24 hourly snapshots** are retained and older ones are pruned automatically. The entire `server-somtum` directory — backups included — is continuously replicated by **Syncthing** from the production VPS to an offsite machine in Thailand, giving geographically separated, near-real-time copies of all production data independent of OVH and Cloudflare.
+Every night at 04:30 a backup dumps every database (`mysqldump --single-transaction`) and copies the game server's and website's files (avatars, replays, beatmaps, uploads). The last **7 days** are kept. The search index isn't backed up: it's rebuilt from the database.
 
 ### Domain Routing
 
 | Domain | Service | Notes |
 |---|---|---|
-| `somtum.fun` | gukarkka :3000 | Web frontend |
-| `c` / `ce` / `c4` / `osu` / `b` / `api` / `session` `.somtum.fun` | bancho.py :10000 | osu! client + API endpoints (rate-limited on c/ce/c4/osu) |
-| `payment.somtum.fun` | payments-service :8001 | Donation processing |
-| `a.somtum.fun` | Static files | Avatars |
-| `assets.somtum.fun` / `assets1.somtum.fun` | Static files | Banners, clan assets, replays |
+| `osu.somtum.fun` | Website + TomYum | The website and API v2; `/web/*` goes to TomYum |
+| `c` / `c1`–`c6` / `ce` / `cho` `.somtum.fun` | TomYum | osu!(stable) bancho |
+| `spectator.somtum.fun` | tomyum-spectator | lazer multiplayer, spectating, metadata |
+| `a` / `b` / `s` / `assets` `.somtum.fun` | TomYum / website | Avatars, beatmap previews, static files |
+| `api.somtum.fun` | TomYum | bancho.py-style API |
+| `payment.somtum.fun` | payments-service | Store payments |
+| `bn.somtum.fun` | qat | BN Management |
+| `dl.somtum.fun` | Static files | TumThai, launcher, patcher and legacy client downloads |
+| `docs.somtum.fun` | Static site | TomYum-OSS docs |
+| `status.somtum.fun` | Gatus + Prometheus | Server status (monitored from a separate machine) |
+| `somtum.fun` / `www` | Redirect | Old links go to `osu.somtum.fun` |
+| `irc.somtum.fun:6667` | TomYum | IRC (DNS only) |
+| `server.somtum.fun:13380-13384` | TomYum | TCP bancho for pre-2014 clients (DNS only) |
 
-All subdomains sit behind the Cloudflare proxy; Caddy handles routing and automatic HTTPS at the OVH VPS.
+The web subdomains sit behind the Cloudflare proxy. IRC and the old TCP bancho connect directly.
