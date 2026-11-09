@@ -60,7 +60,11 @@ flowchart TB
             dl[("Downloads<br/>dl.somtum.fun")]
         end
 
-        backup["Nightly backup<br/>(cron 04:30, 7 days)"]
+        backup["Nightly dump<br/>(04:30 UTC)"]
+    end
+
+    subgraph Offsite["Off-site backup — separate server in Thailand"]
+        offsite[("restic snapshots<br/>every 15 min, 7 days")]
     end
 
     subgraph ExternalAPIs["External APIs"]
@@ -96,7 +100,10 @@ flowchart TB
     tomyum --> osuapi & mirror & discordapi
     payments --> truemoney & stripe
 
-    mysql & files --> backup
+    mysql & files & mongo --> backup
+    mysql -.->|"binlog, every minute"| offsite
+    files & dl -.->|"every minute"| offsite
+    backup -.->|"nightly"| offsite
 
     classDef client fill:#e1f5fe,stroke:#01579b,color:#01579b
     classDef proxy fill:#fff3e0,stroke:#e65100,color:#e65100
@@ -112,7 +119,7 @@ flowchart TB
     class scoreproc,indexer,ppside,circleguard internal
     class mysql,redis,es,mongo,files,dl data
     class osuapi,mirror,discordapi,truemoney,stripe external
-    class backup backup
+    class backup,offsite backup
 ```
 
 ## Services
@@ -184,10 +191,22 @@ Players can host their own beatmaps, uploaded **in-game** from both stable (`osu
 | **Cloudflare** | DNS, CDN, DDoS protection, SSL (Origin certificate) |
 | **Caddy** | TLS on the host, routing inside the stack |
 | **Podman** | Container runtime |
+| **Off-site server (Thailand)** | Backups, pulled read-only from the Oracle VM |
 
 ### Backups
 
-Every night at 04:30 a backup dumps every database (`mysqldump --single-transaction`) and copies the game server's and website's files (avatars, replays, beatmaps, uploads). The last **7 days** are kept. The search index isn't backed up: it's rebuilt from the database.
+Backups live on a **separate server in Thailand**, away from the Oracle VM, and are kept as close to real time as we can:
+
+| What | How often |
+|---|---|
+| **MySQL changes** (binlog) | Copied every minute, so the database can be restored to any minute |
+| **Files** (replays, avatars, beatmaps, uploads, downloads) | Mirrored every minute; anything deleted or overwritten is kept for 7 days |
+| **Full database dump** (MySQL + MongoDB), config, host files | Every night at 04:30 UTC, checked to be complete |
+| **Snapshots** of all of the above | Every 15 minutes, encrypted ([restic](https://restic.net)), kept **7 days** |
+
+- **Pull, not push:** the backup server pulls from the game server with a read-only key. The game server has no way to reach the backup server, so someone who broke into it still couldn't delete or change the backups.
+- **Checked every night:** the dumps are verified, the snapshot repository is checked (and a sample of it read back weekly), and failures are posted to staff on Discord.
+- The search index isn't backed up: it's rebuilt from the database.
 
 ### Domain Routing
 
